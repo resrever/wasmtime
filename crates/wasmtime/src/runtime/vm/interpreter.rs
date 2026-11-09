@@ -236,7 +236,7 @@ impl InterpreterRef<'_> {
                         }
                         // There's no handler to resume at, so return to the
                         // host directly indicating that the call failed due to
-                        // a trap (recorded in TLS).
+                        // a trap (recorded in the activation).
                         None => {
                             vm = self.vm();
                             let _ = unsafe { vm.call_end(old_lr, []) };
@@ -468,9 +468,9 @@ impl InterpreterRef<'_> {
         self.vm_state().resume_at_pc = Some(handler.pc);
     }
 
-    /// Handles an interpreter trap. This will initialize the trap state stored
-    /// in TLS by reading the pc/fp of the interpreter and seeing if that's a
-    /// valid opcode to trap at.
+    /// Handles an interpreter trap. This will initialize the trap state of the
+    /// current activation by reading the pc/fp of the interpreter and seeing if
+    /// that's a valid opcode to trap at.
     ///
     /// Returns the pc to resume at, which is the entry trampoline's trap
     /// handler, or `None` if the entry trampoline itself trapped before it set
@@ -516,6 +516,27 @@ impl InterpreterRef<'_> {
             fp: self.vm().fp() as usize,
             lr,
         };
+        // Look up the activation which called into the interpreter, which is
+        // the most recent one for `caller`'s store, along with the trap code if
+        // `kind` doesn't already describe the trap.
+        let mut state = None;
+        let mut trap = None;
+        // SAFETY: `caller` is valid and its store is not otherwise borrowed,
+        // per this function's contract.
+        unsafe {
+            Instance::enter_host_from_wasm(caller, |store, _instance| {
+                let store = store.store_opaque();
+                state = tls::with_store(store, |s| s.map(NonNull::from));
+                if kind.is_none() {
+                    trap = store.modules().store_code_by_pc(regs.pc).and_then(
+                        |(code, text_offset)| code.code_memory().lookup_trap_code(text_offset),
+                    );
+                }
+            });
+        }
+        // SAFETY: the activation lives on the stack for the duration of the
+        // call into the interpreter.
+        let state = unsafe { state.unwrap().as_ref() };
         let trap = match kind {
             Some(kind) => match kind {
                 TrapKind::IntegerOverflow => Trap::IntegerOverflow.into(),
@@ -525,28 +546,12 @@ impl InterpreterRef<'_> {
                 TrapKind::DisabledOpcode => Trap::DisabledOpcode.into(),
                 TrapKind::StackOverflow => Trap::StackOverflow.into(),
             },
-            None => {
-                let mut trap = None;
-                // SAFETY: `caller` is valid and its store is not otherwise
-                // borrowed, per this function's contract.
-                unsafe {
-                    Instance::enter_host_from_wasm(caller, |store, _instance| {
-                        trap = store
-                            .store_opaque()
-                            .modules()
-                            .store_code_by_pc(regs.pc)
-                            .and_then(|(code, text_offset)| {
-                                code.code_memory().lookup_trap_code(text_offset)
-                            });
-                    });
-                }
-                match trap {
-                    Some(trap) => trap,
-                    // This shouldn't be possible, so this is a fatal error if
-                    // it happens.
-                    None => panic!("pulley trap at {pc:?} without trap code registered"),
-                }
-            }
+            None => match trap {
+                Some(trap) => trap,
+                // This shouldn't be possible, so this is a fatal error if it
+                // happens.
+                None => panic!("pulley trap at {pc:?} without trap code registered"),
+            },
         };
 
         // If the trapping function was called directly by the host then it's
@@ -555,15 +560,12 @@ impl InterpreterRef<'_> {
         // handler, and this activation has no Wasm frames for the backtrace, so
         // record the trap and return to the host directly.
         if lr.is_some() && self.vm().lr_is_host_return() {
-            tls::with(|s| s.unwrap().record_jit_trap(regs.pc, None, trap, None));
+            state.record_jit_trap(regs.pc, None, trap, None);
             return None;
         }
 
-        let handler = tls::with(|s| {
-            let s = s.unwrap();
-            s.set_jit_trap(regs, None, trap);
-            s.entry_trap_handler()
-        });
+        state.set_jit_trap(regs, None, trap);
+        let handler = state.entry_trap_handler();
         unsafe {
             self.resume_to_exception_handler(&handler, 0, 0);
         }

@@ -73,7 +73,7 @@ impl Backtrace {
     pub fn new(store: &StoreOpaque) -> Backtrace {
         let vm_store_context = store.vm_store_context();
         let unwind = store.unwinder();
-        tls::with(|state| match state {
+        tls::with_store(store, |state| match state {
             Some(state) => unsafe {
                 Self::new_with_trap_state(vm_store_context, unwind, state, None)
             },
@@ -116,7 +116,7 @@ impl Backtrace {
     pub fn trace(store: &StoreOpaque, mut f: impl FnMut(Frame) -> ControlFlow<()>) {
         let vm_store_context = store.vm_store_context();
         let unwind = store.unwinder();
-        tls::with(|state| match state {
+        tls::with_store(store, |state| match state {
             Some(state) => unsafe {
                 let f = |activation: Activation| {
                     wasmtime_unwinder::visit_frames(
@@ -377,7 +377,7 @@ impl Backtrace {
     pub(crate) fn activations(store: &StoreOpaque) -> Vec<Activation> {
         let mut activations = vec![];
         let vm_store_context = store.vm_store_context();
-        tls::with(|state| match state {
+        tls::with_store(store, |state| match state {
             Some(state) => unsafe {
                 Self::trace_with_trap_state(vm_store_context, state, None, |act| {
                     activations.push(act);

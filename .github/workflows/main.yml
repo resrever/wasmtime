@@ -1182,6 +1182,13 @@ jobs:
         WASMTIME_SIGNALS_BASED_TRAPS: 1
         MIN_PLATFORM_EXAMPLE_DISABLE_WASI: 1
 
+    # Without signals or WASI (and thus `async`) Wasmtime doesn't use TLS, and
+    # instead tracks activations in each store.
+    - run: ./build.sh x86_64-unknown-none
+      working-directory: ./examples/min-platform
+      env:
+        MIN_PLATFORM_EXAMPLE_DISABLE_WASI: 1
+
     # Add the `wasmtime-platform.h` file as a release artifact
     - uses: actions/upload-artifact@v7
       with:

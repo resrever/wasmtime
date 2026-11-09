@@ -53,6 +53,12 @@ fn main() {
         && cfg!(feature = "runtime");
     let has_custom_fiber = !has_builtin_stackswitch && cfg!(feature = "custom-fiber");
 
+    // Whether the runtime needs thread-local storage. Native signal handlers
+    // can only find the current activation through TLS, and async fibers may
+    // migrate between threads. Without either, each store tracks its own
+    // activations instead.
+    let has_tls = has_native_signals || cfg!(feature = "async");
+
     // Whether we can run code using MMU interruption on this host. Whether we
     // should compile such code is a separate matter, controlled by the
     // `mmu_interruption` engine tunable. This doesn't require cranelift to be
@@ -71,6 +77,7 @@ fn main() {
     custom_cfg("has_virtual_memory", has_virtual_memory);
     custom_cfg("has_custom_fiber", has_custom_fiber);
     custom_cfg("has_custom_sync", has_custom_sync);
+    custom_cfg("has_tls", has_tls);
     custom_cfg("has_host_compiler_backend", has_host_compiler_backend);
     custom_cfg("has_mmu_interruption_runtime", has_mmu_interruption_runtime);
     custom_cfg("gc_zeal", cfg("fuzzing"));

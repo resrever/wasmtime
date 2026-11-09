@@ -463,6 +463,11 @@ pub struct StoreOpaque {
     engine: Engine,
     vm_store_context: VMStoreContext,
 
+    // The head of this store's list of activations when TLS isn't used for
+    // that, see `vm::tls` for more details.
+    #[cfg(not(has_tls))]
+    activations: vm::tls::Activations,
+
     // Contains all continuations ever allocated throughout the lifetime of this
     // store.
     #[cfg(feature = "stack-switching")]
@@ -728,6 +733,8 @@ impl<T> Store<T> {
             _marker: marker::PhantomPinned,
             engine: engine.clone(),
             vm_store_context: Default::default(),
+            #[cfg(not(has_tls))]
+            activations: Default::default(),
             #[cfg(feature = "stack-switching")]
             continuations: Vec::new(),
             instances: TryPrimaryMap::new(),
@@ -1997,6 +2004,12 @@ impl StoreOpaque {
     #[inline]
     pub fn vm_store_context_ptr(&self) -> NonNull<VMStoreContext> {
         NonNull::from(&self.vm_store_context)
+    }
+
+    #[inline]
+    #[cfg(not(has_tls))]
+    pub(crate) fn activations(&self) -> &vm::tls::Activations {
+        &self.activations
     }
 
     #[inline]
