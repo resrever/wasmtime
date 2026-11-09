@@ -48,6 +48,13 @@ fn main() -> Result<()> {
 
         match sym.name()? {
             "memmove" | "memset" | "memcmp" | "memcpy" | "bcmp" | "__tls_get_addr" => {}
+            // Wasmtime only uses TLS with native signals or `async` (enabled
+            // here through WASI).
+            s @ ("wasmtime_tls_get" | "wasmtime_tls_set")
+                if !cfg!(feature = "custom") && !cfg!(feature = "wasi") =>
+            {
+                panic!("unexpected dependency on TLS through `{s}`")
+            }
             s if s.starts_with("wasmtime_") => {}
             // Hooks used by the embedding's `CustomCodeMemory`, also provided by
             // `wasmtime-platform.c`.
@@ -86,7 +93,7 @@ fn main() -> Result<()> {
     // actually available at runtime. CPU support for these features has
     // existed since 2013 (Haswell) on Intel chips and 2012 (Piledriver) on
     // AMD chips.
-    if cfg!(target_arch = "x86_64") {
+    if cfg!(target_arch = "x86_64") && !cfg!(feature = "pulley") {
         unsafe {
             config.cranelift_flag_enable("has_sse3");
             config.cranelift_flag_enable("has_ssse3");

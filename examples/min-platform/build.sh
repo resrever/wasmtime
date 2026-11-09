@@ -31,6 +31,13 @@ if [ "$WASMTIME_CUSTOM_SYNC" = "1" ]; then
   features="$features,custom-sync-primitives"
 fi
 
+# Optionally execute Pulley bytecode instead of native code.
+wasm_target=$target
+if [ "$MIN_PLATFORM_EXAMPLE_PULLEY" = "1" ]; then
+  features="$features,pulley"
+  wasm_target=pulley64
+fi
+
 if [ "$MIN_PLATFORM_EXAMPLE_DISABLE_WASI" != "1" ]; then
   features="$features,wasi"
   cargo build \
@@ -77,7 +84,7 @@ cc \
 # The final step here is running the host, in the current directory, which will
 # load the embedding and execute it.
 cargo run --manifest-path "$HOST_DIR/Cargo.toml" --release --no-default-features --features "$features" -- \
-  "$target" \
+  "$wasm_target" \
   "$HOST_DIR/libembedding.so" \
   "$HOST_DIR/libwasmtime-platform.so" \
   $WASI_EXAMPLE_PATH
