@@ -21,8 +21,8 @@ mod pagemap;
 #[cfg(not(all(target_os = "linux", target_pointer_width = "64", feature = "std")))]
 use crate::vm::pagemap_disabled as pagemap;
 
-#[cfg(has_tls)]
+#[cfg(any(has_tls, feature = "component-model-async"))]
 #[path = "../std_tls.rs"]
 mod std_tls;
-#[cfg(has_tls)]
+#[cfg(any(has_tls, feature = "component-model-async"))]
 pub use std_tls::*;

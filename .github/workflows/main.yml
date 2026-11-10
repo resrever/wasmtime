@@ -1182,10 +1182,11 @@ jobs:
         WASMTIME_SIGNALS_BASED_TRAPS: 1
         MIN_PLATFORM_EXAMPLE_DISABLE_WASI: 1
 
-    # Without signals or WASI (and thus `async`) Wasmtime doesn't use TLS, and
-    # instead tracks activations in each store. The host checks that the
-    # embedding doesn't depend on `wasmtime_tls_{get,set}`. Test this with both
-    # native code and Pulley.
+    # Without signals Wasmtime doesn't use TLS, and instead tracks activations
+    # in each store. The host checks that the embedding doesn't depend on
+    # `wasmtime_tls_{get,set}`, which the first build above checks with WASI
+    # (and thus `async`). Test this without WASI too, with both native code and
+    # Pulley.
     - run: ./build.sh x86_64-unknown-none
       working-directory: ./examples/min-platform
       env:

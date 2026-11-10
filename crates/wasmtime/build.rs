@@ -54,11 +54,9 @@ fn main() {
     let has_custom_fiber = !has_builtin_stackswitch && cfg!(feature = "custom-fiber");
 
     // Whether the runtime uses thread-local storage. Native signal handlers
-    // can only find the current activation through TLS. The `async` feature is
-    // included to limit the scope of this for now: its fiber suspend/resume
-    // code still assumes the activations are in TLS. Without either, each store
-    // tracks its own activations instead.
-    let has_tls = has_native_signals || cfg!(feature = "async");
+    // can only find the current activation through TLS. Without them, each
+    // store tracks its own activations instead.
+    let has_tls = has_native_signals;
 
     // Whether we can run code using MMU interruption on this host. Whether we
     // should compile such code is a separate matter, controlled by the

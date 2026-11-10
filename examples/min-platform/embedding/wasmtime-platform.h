@@ -252,9 +252,9 @@ extern void wasmtime_memory_image_free(struct wasmtime_memory_image *image);
  *
  * The values should default to `NULL`.
  *
- * TLS is only used with the `custom-native-signals` or `async` features.
- * Without either of them this function, and `wasmtime_tls_set`, are never
- * called and do not need to be defined.
+ * TLS is only used with the `custom-native-signals` or
+ * `component-model-async` features. Without either of them this function,
+ * and `wasmtime_tls_set`, are never called and do not need to be defined.
  */
 extern uint8_t *wasmtime_tls_get(uintptr_t slot);
 
