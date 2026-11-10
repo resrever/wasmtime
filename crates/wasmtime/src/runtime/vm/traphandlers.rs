@@ -106,7 +106,10 @@ fn lazy_per_thread_init() {
 /// have been previously called. Additionally no Rust destructors can be on the
 /// stack. They will be skipped and not executed.
 pub(super) unsafe fn raise_preexisting_trap(store: &mut dyn VMStore) {
-    tls::with(|info| unsafe { info.unwrap().unwind(store) })
+    let info = tls::head_of(store.store_opaque());
+    // SAFETY: the activation lives on the stack for the duration of the call
+    // into WebAssembly, which per this function's contract is in progress.
+    unsafe { info.as_ref().unwrap().unwind(store) }
 }
 
 /// Invokes the closure `f` and handles any error/panic/trap that happens
@@ -149,14 +152,17 @@ where
 {
     // Invoke the closure `f`, optionally catching unwinds depending on `R`. The
     // return value is always provided and if unwind information is provided
-    // (e.g. `ret` is a "false"-y value) then it's recorded in TLS for the
-    // unwind operation that's about to happen from Cranelift-generated code.
+    // (e.g. `ret` is a "false"-y value) then it's recorded in the current
+    // activation for the unwind operation that's about to happen from
+    // Cranelift-generated code.
     let (ret, unwind) = R::maybe_catch_unwind(store, |store| f(store));
     if let Some(mut unwind) = unwind {
         if let UnwindReason::Trap(Ok(trap)) = &mut unwind {
             uncaught_exception.apply(&mut trap.reason);
         }
-        tls::with(|info| info.unwrap().record_unwind(unwind));
+        tls::with_store(store.store_opaque(), |info| {
+            info.unwrap().record_unwind(unwind)
+        });
     }
     ret
 }
@@ -554,9 +560,9 @@ mod call_thread_state {
     /// and track state necessary when an unwind happens for the original
     /// creator of `CallThreadState` to determine why the unwind happened.
     ///
-    /// Note that this structure is pointed-to from TLS, hence liberal usage of
-    /// interior mutability here since that only gives access to
-    /// `&CallThreadState`.
+    /// Note that this structure is pointed-to from the list of activations
+    /// (see the `tls` module), hence liberal usage of interior mutability here
+    /// since that only gives access to `&CallThreadState`.
     pub struct CallThreadState {
         /// Unwind state set when initiating an unwind and read when
         /// the control transfer occurs (after the `raise` point is
@@ -574,6 +580,11 @@ mod call_thread_state {
         pub(crate) unwinder: &'static dyn Unwind,
 
         pub(super) prev: Cell<tls::Ptr>,
+
+        /// The store's list of activations that this is pushed onto, when
+        /// TLS isn't used to hold the list.
+        #[cfg(not(has_tls))]
+        activations: NonNull<tls::Activations>,
 
         // The state of the runtime for the *previous* `CallThreadState` for
         // this same store. Our *current* state is saved in `self.vm_store_context`,
@@ -612,6 +623,8 @@ mod call_thread_state {
                 capture_coredump: store.engine().config().coredump_on_trap,
                 vm_store_context: Cell::new(store.vm_store_context_ptr()),
                 prev: Cell::new(ptr::null()),
+                #[cfg(not(has_tls))]
+                activations: NonNull::from(store.activations()),
                 old_state,
             }
         }
@@ -650,11 +663,10 @@ mod call_thread_state {
         }
 
         /// Pushes this `CallThreadState` activation on to the linked list
-        /// stored in TLS.
+        /// of activations.
         ///
-        /// This method will take the current head of the linked list, stored in
-        /// our TLS pointer, and move it into `prev`. The TLS pointer is then
-        /// updated to `self`.
+        /// This method will take the current head of the linked list and move
+        /// it into `prev`. The head is then updated to `self`.
         ///
         /// # Panics
         ///
@@ -663,13 +675,13 @@ mod call_thread_state {
         #[inline]
         pub(crate) unsafe fn push(&self) {
             assert!(self.prev.get().is_null());
-            self.prev.set(tls::raw::replace(self));
+            self.prev.set(unsafe { self.replace_head(self) });
         }
 
-        /// Pops this `CallThreadState` from the linked list stored in TLS.
+        /// Pops this `CallThreadState` from the linked list of activations.
         ///
         /// This method will restore `self.prev` into the head of the linked
-        /// list stored in TLS and will additionally null-out `self.prev`.
+        /// list and will additionally null-out `self.prev`.
         ///
         /// # Panics
         ///
@@ -677,8 +689,26 @@ mod call_thread_state {
         #[inline]
         pub(crate) unsafe fn pop(&self) {
             let prev = self.prev.replace(ptr::null());
-            let head = tls::raw::replace(prev);
+            let head = unsafe { self.replace_head(prev) };
             assert!(core::ptr::eq(head, self));
+        }
+
+        /// Replaces the head of the linked list this activation belongs to
+        /// with `val`, returning the previous head. The head is stored in TLS,
+        /// or in the store without TLS. This is the write side of
+        /// `tls::head_of`.
+        ///
+        /// # Safety
+        ///
+        /// The store this activation was created for must still be alive.
+        #[inline]
+        unsafe fn replace_head(&self, val: tls::Ptr) -> tls::Ptr {
+            cfg_select! {
+                has_tls => tls::raw::replace(val),
+                // SAFETY: the store outlives this activation, and is
+                // exclusively borrowed while WebAssembly is called.
+                _ => unsafe { self.activations.as_ref().replace(val) },
+            }
         }
 
         /// Swaps the state in this `CallThreadState`'s `VMStoreContext` with
@@ -1231,15 +1261,64 @@ fn entry_trap_handler(vm_store_context: &VMStoreContext) -> Handler {
 /// opposite when stored in TLS vs when stored for a suspended fiber. The
 /// thread's current list pointed to by TLS is youngest-to-oldest links, while a
 /// suspended fiber stores oldest-to-youngest links.
+///
+/// # Without TLS
+///
+/// TLS is only fundamentally required by native signal handlers, which have no
+/// other way to find the current activation. Every other consumer of the list
+/// already has access to the store that it is interested in, and a store is
+/// exclusively borrowed for the duration of a call into WebAssembly.
+///
+/// When Wasmtime is built without native signals and without the `async`
+/// feature (i.e. `cfg(not(has_tls))`), the head of the linked list is instead
+/// stored in each store's `Activations`. This removes the need for embedders to
+/// provide TLS at all, for example via `wasmtime_tls_{get,set}` on custom
+/// platforms.
+///
+/// The `async` feature doesn't fundamentally need TLS either, as a store moves
+/// between threads along with its fibers. It still uses TLS for now because the
+/// fiber suspend/resume code above saves and restores the thread's list, and
+/// hasn't been updated to work with a store's list instead.
 pub(crate) mod tls {
     #[cfg(all(feature = "component-model-async", feature = "gc"))]
     use crate::module::ModuleRegistry;
-    #[cfg(all(feature = "component-model-async", feature = "gc"))]
     use crate::store::StoreOpaque;
 
     use super::CallThreadState;
 
-    pub use raw::Ptr;
+    pub type Ptr = *const CallThreadState;
+
+    /// Storage within a store for the head of its linked list of activations,
+    /// used in place of TLS.
+    #[cfg(not(has_tls))]
+    pub struct Activations(core::cell::Cell<Ptr>);
+
+    // SAFETY: this is only written, by `CallThreadState::{push,pop}`, while the
+    // store is exclusively borrowed for a call into WebAssembly. All other
+    // accesses are reads through `&StoreOpaque`, which cannot overlap with
+    // those writes.
+    #[cfg(not(has_tls))]
+    unsafe impl Send for Activations {}
+    #[cfg(not(has_tls))]
+    unsafe impl Sync for Activations {}
+
+    #[cfg(not(has_tls))]
+    impl Default for Activations {
+        fn default() -> Activations {
+            Activations(core::cell::Cell::new(core::ptr::null()))
+        }
+    }
+
+    #[cfg(not(has_tls))]
+    impl Activations {
+        pub(super) fn get(&self) -> Ptr {
+            self.0.get()
+        }
+
+        pub(super) fn replace(&self, val: Ptr) -> Ptr {
+            self.0.replace(val)
+        }
+    }
 
     // An even *more* inner module for dealing with TLS. This actually has the
     // thread local variable and has functions to access the variable.
@@ -1255,10 +1334,9 @@ pub(crate) mod tls {
     //
     // Note, though, that if async support is disabled at compile time then
     // these functions are free to be inlined.
+    #[cfg(has_tls)]
     pub(super) mod raw {
-        use super::CallThreadState;
-
-        pub type Ptr = *const CallThreadState;
+        use super::{CallThreadState, Ptr};
 
         const _: () = {
             assert!(core::mem::align_of::<CallThreadState>() > 1);
@@ -1312,7 +1390,15 @@ pub(crate) mod tls {
         }
     }
 
+    #[cfg(has_tls)]
     pub use raw::initialize as tls_eager_initialize;
+
+    /// Without TLS this is only the platform's per-thread initialization,
+    /// which is a no-op without native signals.
+    #[cfg(not(has_tls))]
+    pub fn tls_eager_initialize() {
+        super::lazy_per_thread_init();
+    }
     #[cfg(all(feature = "component-model-async", feature = "gc"))]
     use wasmtime_unwinder::Unwind;
 
@@ -1331,7 +1417,7 @@ pub(crate) mod tls {
         //
         // If this pointer is null then that means that the fiber this state is
         // associated with has no activations.
-        state: raw::Ptr,
+        state: Ptr,
     }
 
     // SAFETY: This is a relatively unsafe unsafe block and not really all that
@@ -1464,7 +1550,7 @@ pub(crate) mod tls {
         // The raw value of this thread's TLS pointer when this structure was
         // created. This is not dereferenced or inspected but is used to halt
         // linked list traversal in [`PreviousAsyncWasmCallState::restore`].
-        state: raw::Ptr,
+        state: Ptr,
     }
 
     #[cfg(feature = "async")]
@@ -1564,8 +1650,46 @@ pub(crate) mod tls {
     }
 
     /// Returns the last pointer configured with `set` above, if any.
+    ///
+    /// This is only available with native signals, as signal handlers have no
+    /// store to pass to `with_store`.
+    #[cfg(has_native_signals)]
     pub fn with<R>(closure: impl FnOnce(Option<&CallThreadState>) -> R) -> R {
-        let p = raw::get();
+        call_with(raw::get(), closure)
+    }
+
+    /// Returns the most recent activation configured with `set` above for
+    /// `store`, if any.
+    ///
+    /// With TLS this is instead the most recent activation on this thread,
+    /// which may belong to a different store. Traps and unwinds are only
+    /// recorded for the store currently running WebAssembly, whose activation
+    /// is the most recent on this thread, and backtraces filter activations by
+    /// store, so both behave the same either way.
+    pub fn with_store<R>(
+        store: &StoreOpaque,
+        closure: impl FnOnce(Option<&CallThreadState>) -> R,
+    ) -> R {
+        call_with(head_of(store), closure)
+    }
+
+    /// Returns the head of the linked list of activations for `store`, which
+    /// is null if there are none. See `with_store` for which activation this
+    /// is with TLS.
+    ///
+    /// This is the read side of `CallThreadState::replace_head`.
+    #[inline]
+    pub(crate) fn head_of(store: &StoreOpaque) -> Ptr {
+        cfg_select! {
+            has_tls => {
+                let _ = store;
+                raw::get()
+            }
+            _ => store.activations().get(),
+        }
+    }
+
+    fn call_with<R>(p: Ptr, closure: impl FnOnce(Option<&CallThreadState>) -> R) -> R {
         unsafe { closure(if p.is_null() { None } else { Some(&*p) }) }
     }
 }

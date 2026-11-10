@@ -9,6 +9,8 @@ pub mod traphandlers;
 pub mod unwind;
 pub mod vm;
 
+#[cfg(has_tls)]
 #[path = "../std_tls.rs"]
 mod std_tls;
+#[cfg(has_tls)]
 pub use std_tls::*;

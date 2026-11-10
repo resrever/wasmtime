@@ -182,9 +182,15 @@ unsafe extern "C" {
     /// `slot` is passed in.
     ///
     /// The values should default to `NULL`.
+    ///
+    /// TLS is only used with the `custom-native-signals` or `async` features.
+    /// Without either of them this function, and `wasmtime_tls_set`, are never
+    /// called and do not need to be defined.
+    #[cfg_attr(not(has_tls), expect(dead_code, reason = "TLS is not needed"))]
     pub fn wasmtime_tls_get(slot: usize) -> *mut u8;
 
     /// Setter for the TLS space described in `wasmtime_tls_get`.
+    #[cfg_attr(not(has_tls), expect(dead_code, reason = "TLS is not needed"))]
     pub fn wasmtime_tls_set(slot: usize, ptr: *mut u8);
 
     /// Frees a synchronization lock.

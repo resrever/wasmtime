@@ -31,11 +31,13 @@ fn cvt(rc: i32) -> Result<()> {
 }
 
 #[inline]
+#[cfg(has_tls)]
 pub fn tls_get() -> *mut u8 {
     unsafe { capi::wasmtime_tls_get(0) }
 }
 
 #[inline]
+#[cfg(has_tls)]
 pub fn tls_set(ptr: *mut u8) {
     unsafe { capi::wasmtime_tls_set(0, ptr) }
 }
