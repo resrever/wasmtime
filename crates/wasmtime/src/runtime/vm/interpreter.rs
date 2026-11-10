@@ -519,14 +519,14 @@ impl InterpreterRef<'_> {
         // Look up the activation which called into the interpreter, which is
         // the most recent one for `caller`'s store, along with the trap code if
         // `kind` doesn't already describe the trap.
-        let mut state = None;
+        let mut state = core::ptr::null();
         let mut trap = None;
         // SAFETY: `caller` is valid and its store is not otherwise borrowed,
         // per this function's contract.
         unsafe {
             Instance::enter_host_from_wasm(caller, |store, _instance| {
                 let store = store.store_opaque();
-                state = tls::with_store(store, |s| s.map(NonNull::from));
+                state = tls::head_of(store);
                 if kind.is_none() {
                     trap = store.modules().store_code_by_pc(regs.pc).and_then(
                         |(code, text_offset)| code.code_memory().lookup_trap_code(text_offset),
@@ -536,7 +536,7 @@ impl InterpreterRef<'_> {
         }
         // SAFETY: the activation lives on the stack for the duration of the
         // call into the interpreter.
-        let state = unsafe { state.unwrap().as_ref() };
+        let state = unsafe { state.as_ref().unwrap() };
         let trap = match kind {
             Some(kind) => match kind {
                 TrapKind::IntegerOverflow => Trap::IntegerOverflow.into(),

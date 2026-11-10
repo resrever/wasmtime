@@ -172,6 +172,9 @@ fn config() -> Config {
     // Execute Pulley bytecode rather than native code. With an explicit target
     // Wasmtime doesn't infer memory settings from how it was built, so match
     // the host's settings for when virtual memory isn't available.
+    //
+    // These must be kept in sync with the settings the host compiles modules
+    // with in `../src/main.rs`, or modules will fail to deserialize.
     if cfg!(feature = "pulley") {
         config.target("pulley64").unwrap();
         if !cfg!(feature = "custom") {

@@ -77,6 +77,9 @@ fn main() -> Result<()> {
     // If signals-based-traps are disabled then that additionally means that
     // some configuration knobs need to be turned to match the expectations of
     // the guest program being loaded.
+    //
+    // The embedding repeats these settings for Pulley in `config` in
+    // `embedding/src/lib.rs`, and they must be kept in sync.
     if !cfg!(feature = "custom") {
         config.memory_init_cow(false);
         config.memory_reservation(0);
