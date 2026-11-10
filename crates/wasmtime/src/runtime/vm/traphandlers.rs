@@ -1245,6 +1245,10 @@ fn entry_trap_handler(vm_store_context: &VMStoreContext) -> Handler {
 /// this may need to pop multiple `CallThreadState` activations, one for each
 /// one located on the fiber stack itself.
 ///
+/// The same applies without TLS (see below), where the list is the one of the
+/// store that the fiber belongs to: a store can have many fibers, and only the
+/// activations of the fiber which is running may be in its list.
+///
 /// The `AsyncWasmCallState` and `PreviousAsyncWasmCallState` structures in this
 /// module are used to manage this state, namely:
 ///
@@ -1269,16 +1273,18 @@ fn entry_trap_handler(vm_store_context: &VMStoreContext) -> Handler {
 /// already has access to the store that it is interested in, and a store is
 /// exclusively borrowed for the duration of a call into WebAssembly.
 ///
-/// When Wasmtime is built without native signals and without the `async`
-/// feature (i.e. `cfg(not(has_tls))`), the head of the linked list is instead
-/// stored in each store's `Activations`. This removes the need for embedders to
-/// provide TLS at all, for example via `wasmtime_tls_{get,set}` on custom
-/// platforms.
+/// When Wasmtime is built without native signals (i.e. `cfg(not(has_tls))`),
+/// the head of the linked list is instead stored in each store's
+/// `Activations`. This removes the need for embedders to provide TLS at all,
+/// for example via `wasmtime_tls_{get,set}` on custom platforms.
 ///
-/// The `async` feature doesn't fundamentally need TLS either, as a store moves
-/// between threads along with its fibers. It still uses TLS for now because the
-/// fiber suspend/resume code above saves and restores the thread's list, and
-/// hasn't been updated to work with a store's list instead.
+/// Each store then has its own list, which only contains its own activations.
+/// A fiber's stack may also have activations of other stores on it, when the
+/// host calls into another store while running on the fiber. Those stay in
+/// their own store's list while the fiber is suspended, which is fine as that
+/// store is still borrowed by the suspended host frame that called into it and
+/// so can't be used in the meantime. Unlike a thread's list, a store's list
+/// moves between threads together with the store and its fibers.
 pub(crate) mod tls {
     #[cfg(all(feature = "component-model-async", feature = "gc"))]
     use crate::module::ModuleRegistry;
@@ -1294,9 +1300,9 @@ pub(crate) mod tls {
     pub struct Activations(core::cell::Cell<Ptr>);
 
     // SAFETY: this is only written, by `CallThreadState::{push,pop}`, while the
-    // store is exclusively borrowed for a call into WebAssembly. All other
-    // accesses are reads through `&StoreOpaque`, which cannot overlap with
-    // those writes.
+    // store is exclusively borrowed, either for a call into WebAssembly or to
+    // resume or suspend one of its fibers. All other accesses are reads through
+    // `&StoreOpaque`, which cannot overlap with those writes.
     #[cfg(not(has_tls))]
     unsafe impl Send for Activations {}
     #[cfg(not(has_tls))]
@@ -1439,7 +1445,8 @@ pub(crate) mod tls {
         }
 
         /// Pushes the saved state of this wasm's call onto the current thread's
-        /// state.
+        /// state, or without TLS onto the state of `store`, which the fiber
+        /// belongs to.
         ///
         /// This will iterate over the linked list of states stored within
         /// `self` and push them sequentially onto the current thread's
@@ -1456,10 +1463,12 @@ pub(crate) mod tls {
         /// `PreviousAsyncWasmCallState::restore` and fiber switches to ensure
         /// that this doesn't push stale data and the data is popped
         /// appropriately.
-        pub unsafe fn push(self) -> PreviousAsyncWasmCallState {
-            // First save the state of TLS as-is so when this state is popped
-            // off later on we know where to stop.
-            let ret = PreviousAsyncWasmCallState { state: raw::get() };
+        pub unsafe fn push(self, store: &StoreOpaque) -> PreviousAsyncWasmCallState {
+            // First save the head of the list as-is so when this state is
+            // popped off later on we know where to stop.
+            let ret = PreviousAsyncWasmCallState {
+                state: head_of(store),
+            };
 
             // The oldest activation, if present, has various `VMStoreContext`
             // fields saved within it. These fields were the state for the
@@ -1502,8 +1511,11 @@ pub(crate) mod tls {
         /// This is used when exiting a future in Wasmtime to assert that the
         /// current CallThreadState pointer does not point within the stack
         /// we're leaving (e.g. allocated for a fiber).
-        pub fn assert_current_state_not_in_range(range: core::ops::Range<usize>) {
-            let p = raw::get() as usize;
+        pub fn assert_current_state_not_in_range(
+            store: &StoreOpaque,
+            range: core::ops::Range<usize>,
+        ) {
+            let p = head_of(store) as usize;
             assert!(!range.contains(&p));
         }
 
@@ -1560,19 +1572,20 @@ pub(crate) mod tls {
         ///
         /// This will pop the top activation of this current thread continuously
         /// until it reaches whatever the current activation was when
-        /// [`AsyncWasmCallState::push`] was originally called.
+        /// [`AsyncWasmCallState::push`] was originally called. Without TLS this
+        /// is the list of `store` instead.
         ///
         /// # Unsafety
         ///
-        /// Must be paired with a `push` and only performed at a time when a
-        /// fiber is being suspended.
-        pub unsafe fn restore(self) -> AsyncWasmCallState {
+        /// Must be paired with a `push`, with the same `store`, and only
+        /// performed at a time when a fiber is being suspended.
+        pub unsafe fn restore(self, store: &StoreOpaque) -> AsyncWasmCallState {
             let thread_head = self.state;
             core::mem::forget(self);
             let mut ret = AsyncWasmCallState::new();
             loop {
-                // If the current TLS state is as we originally found it, then
-                // this loop is finished.
+                // If the current head of the list is as we originally found
+                // it, then this loop is finished.
                 //
                 // Note, though, that before exiting, if the oldest
                 // `CallThreadState` is present, the current state of
@@ -1589,7 +1602,7 @@ pub(crate) mod tls {
                 // returned `AsyncWasmCallState`. Resumption above in
                 // `AsyncWasmCallState::push` will perform the swap back into
                 // the store to hook things up again.
-                let ptr = raw::get();
+                let ptr = head_of(store);
                 if ptr == thread_head {
                     unsafe {
                         if let Some(state) = ret.state.as_ref() {
@@ -1600,7 +1613,7 @@ pub(crate) mod tls {
                     break ret;
                 }
 
-                // Pop this activation from the current thread's TLS state, and
+                // Pop this activation from the current list, and
                 // then afterwards push it onto our own linked list within this
                 // `AsyncWasmCallState`. Note that the linked list in
                 // `AsyncWasmCallState` is stored in reverse order so a

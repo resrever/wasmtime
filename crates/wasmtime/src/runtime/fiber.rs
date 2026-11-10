@@ -621,7 +621,7 @@ impl FiberResumeState {
         store: &mut StoreOpaque,
         fiber: &mut StoreFiber<'_>,
     ) -> PriorFiberResumeState {
-        let tls = unsafe { self.tls.push() };
+        let tls = unsafe { self.tls.push(store) };
         let mpk = swap_mpk_states(self.mpk);
         let async_guard_range = fiber
             .fiber()
@@ -694,7 +694,7 @@ struct PriorFiberResumeState {
 
 impl PriorFiberResumeState {
     unsafe fn replace(self, store: &mut StoreOpaque) -> FiberResumeState {
-        let tls = unsafe { self.tls.restore() };
+        let tls = unsafe { self.tls.restore(store) };
         let mpk = swap_mpk_states(self.mpk);
         // No need to save `_my_guard` since we can re-infer it from the fiber
         // that this state is attached to.
@@ -768,8 +768,8 @@ fn resume_fiber<'a>(
             .into_inner()
             .replace(store, fiber);
         let restore = Restore {
-            store,
-            fiber,
+            store: &mut *store,
+            fiber: &mut *fiber,
             state: Some(prev),
         };
         restore.fiber.fiber().unwrap().resume(result)
@@ -794,8 +794,11 @@ fn resume_fiber<'a>(
             // pointer Wasmtime uses is not pointing anywhere within the
             // stack. If it is then that's a bug indicating that TLS management
             // in Wasmtime is incorrect.
+            //
+            // Without TLS the same is checked of the store's list of
+            // activations, which must not contain a suspended fiber's.
             if let Some(range) = fiber.fiber().unwrap().stack().range() {
-                AsyncWasmCallState::assert_current_state_not_in_range(range);
+                AsyncWasmCallState::assert_current_state_not_in_range(store, range);
             }
         }
     }

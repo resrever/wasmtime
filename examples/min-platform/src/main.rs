@@ -48,11 +48,9 @@ fn main() -> Result<()> {
 
         match sym.name()? {
             "memmove" | "memset" | "memcmp" | "memcpy" | "bcmp" | "__tls_get_addr" => {}
-            // Wasmtime only uses TLS with native signals or `async` (enabled
-            // here through WASI).
-            s @ ("wasmtime_tls_get" | "wasmtime_tls_set")
-                if !cfg!(feature = "custom") && !cfg!(feature = "wasi") =>
-            {
+            // Wasmtime only uses TLS with native signals, or with the
+            // `component-model-async` feature which this example doesn't use.
+            s @ ("wasmtime_tls_get" | "wasmtime_tls_set") if !cfg!(feature = "custom") => {
                 panic!("unexpected dependency on TLS through `{s}`")
             }
             s if s.starts_with("wasmtime_") => {}

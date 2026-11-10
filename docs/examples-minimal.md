@@ -349,12 +349,12 @@ symbols that the Wasmtime runtime requires to work which your platform will need
 to provide. Some important notes about this are:
 
 * `wasmtime_tls_{get,set}` are required for the runtime to operate when the
-  `custom-native-signals` or `async` features are enabled. Effectively a single
-  pointer of TLS storage is necessary. Whether or not this is actually stored in
-  TLS is up to the embedder, for example [storage in `static` memory][tls] is ok
-  if the embedder knows it won't be using threads. Without either feature,
-  Wasmtime tracks this state within each `Store` instead and these functions
-  are never called.
+  `custom-native-signals` or `component-model-async` features are enabled.
+  Effectively a pointer of TLS storage is necessary for each. Whether or not
+  this is actually stored in TLS is up to the embedder, for example [storage in
+  `static` memory][tls] is ok if the embedder knows it won't be using threads.
+  Without native signals Wasmtime tracks its activations within each `Store`
+  instead, and without either feature these functions are never called.
 
 * `WASMTIME_SIGNALS_BASED_TRAPS` - if this `#define` is given (e.g. the
   `signals-based-traps` feature was enabled at compile time), then your platform

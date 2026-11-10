@@ -9,8 +9,8 @@ pub mod traphandlers;
 pub mod unwind;
 pub mod vm;
 
-#[cfg(has_tls)]
+#[cfg(any(has_tls, feature = "component-model-async"))]
 #[path = "../std_tls.rs"]
 mod std_tls;
-#[cfg(has_tls)]
+#[cfg(any(has_tls, feature = "component-model-async"))]
 pub use std_tls::*;

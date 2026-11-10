@@ -15,8 +15,8 @@ pub use unwind64 as unwind;
 #[cfg(all(not(target_pointer_width = "64"), has_host_compiler_backend))]
 compile_error!("don't know how to unwind non-64 bit platforms");
 
-#[cfg(has_tls)]
+#[cfg(any(has_tls, feature = "component-model-async"))]
 #[path = "../std_tls.rs"]
 mod std_tls;
-#[cfg(has_tls)]
+#[cfg(any(has_tls, feature = "component-model-async"))]
 pub use std_tls::*;

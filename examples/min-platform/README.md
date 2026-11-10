@@ -35,8 +35,8 @@ The example is organized into a few locations:
 Taken together this example is unlikely to satisfy any one individual use case
 but should set up the scaffolding to show how Wasmtime can be built for a
 nonstandard platform. Wasmtime effectively requires one pointer of thread-local
-memory (only with the `custom-native-signals` or `async` features) and otherwise
-all other dependencies can be internalized.
+memory (only with the `custom-native-signals` or `component-model-async`
+features) and otherwise all other dependencies can be internalized.
 
 ## Description
 
