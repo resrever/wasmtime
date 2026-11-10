@@ -96,7 +96,7 @@ fn main() -> Result<()> {
     // actually available at runtime. CPU support for these features has
     // existed since 2013 (Haswell) on Intel chips and 2012 (Piledriver) on
     // AMD chips.
-    if cfg!(target_arch = "x86_64") && !cfg!(feature = "pulley") {
+    if cfg!(all(target_arch = "x86_64", not(feature = "pulley"))) {
         unsafe {
             config.cranelift_flag_enable("has_sse3");
             config.cranelift_flag_enable("has_ssse3");
